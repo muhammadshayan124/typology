@@ -1,0 +1,24 @@
+[project]
+name = "typology"
+version = "0.1.0"
+description = "Graph-aware AML transaction-monitoring anomaly detector, evaluated honestly on precision/recall trade-offs (not just accuracy) against a documented synthetic benchmark"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "networkx>=3.2",
+    "scikit-learn>=1.4",
+    "xgboost>=2.0",
+    "shap>=0.45",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.scripts]
+typology = "typology.cli:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
