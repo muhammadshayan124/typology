@@ -32,19 +32,55 @@ invention:
 - **Structuring** — a sum is split into transfers each just under a reporting threshold
   (modeled here as €10,000), spread across several days specifically to stay under it.
 
-## The honest caveat that matters most
+## What the numbers mean (and what they don't)
 
-**The strong numbers below are partly circular, and that's worth being direct about.**
-The graph features (`src_velocity_1day`, `near_threshold`, `amount_zscore_vs_src_history`,
-...) were deliberately engineered to detect exactly the typologies the generator injects.
-Scoring well here mostly demonstrates that the detector recognizes the *known* patterns it
-was built to look for — real money launderers adapt, obfuscate, and don't announce which
-typology they're using. This project demonstrates the *engineering approach* (graph
-features + imbalance-aware evaluation + auditable explanations) honestly; it is not a
-claim that real-world AML detection performs anywhere near this well. See also the
-feature-scope limitation in `features.py`'s module docstring (features are computed
-dataset-wide, not as a true point-in-time snapshot — a real system needs genuinely
-temporal features to avoid leaking future information into a transaction's score).
+Two things inflate results on a project like this, and both are measured here rather than
+asserted away.
+
+**1. Leakage.** The first version computed graph features over the *whole* dataset and
+evaluated on a shuffled split, so a transaction's features included its own future. The
+default is now **point-in-time**: each transaction sees only what happened before it, and
+the evaluation is a **chronological split** (train on the earliest 70% of the timeline,
+test on the latest 30%). `typology leakage` runs all four combinations on the same data:
+
+| Features | Split | PR-AUC | Precision @0.5 | Recall @0.5 |
+|---|---|---|---|---|
+| dataset-wide (leaky) | shuffled | 0.988 | 95.31% | 92.42% |
+| dataset-wide (leaky) | chronological | 0.964 | 92.00% | 92.00% |
+| point-in-time | shuffled | 0.934 | 87.05% | 91.67% |
+| **point-in-time** | **chronological** | **0.876** | **85.00%** | **81.60%** |
+
+The original headline (0.988) overstated the deployable figure by about 0.11 PR-AUC, and
+recall by about 11 points.
+
+**2. The generator is easier than reality.** Injected laundering amounts are large against
+a log-normal legitimate distribution (median legitimate transaction about €89), so
+`amount` alone separates a lot of it. `typology run` therefore also trains an
+**amount-only baseline**: 0.726 PR-AUC against 0.876 for the full feature set. The honest
+claim is that the graph features add about 0.15 PR-AUC over a trivial baseline on this
+data, not that 0.876 predicts real-world performance. Real launderers adapt, obfuscate and
+do not announce their typology, and the features were engineered to detect exactly the
+typologies the generator injects, which remains circular. This demonstrates an engineering
+approach, not a claim about real AML detection.
+
+Point-in-time features expose a structural weakness the leaky version hid. Recall at 0.5
+by typology on the test period:
+
+| Typology | Test transactions | Recall |
+|---|---|---|
+| layering | 13 | 100% |
+| structuring | 41 | 95% |
+| fan-out | 42 | 74% |
+| fan-in | 29 | 66% |
+
+Fan-out and fan-in are bursts: the first few transfers in a burst arrive before any
+history says "burst", so they are scored without it. Dataset-wide features hid this by
+letting early transfers see the rest of the burst. Detecting these earlier would need
+features about the *recipient* side (a dormant account suddenly receiving) rather than
+more velocity features.
+
+PageRank is the one feature a causal pipeline cannot update per transaction cheaply, so it
+uses a daily snapshot (stale by up to a day, never forward-looking).
 
 ## Why not just report accuracy
 
@@ -61,16 +97,21 @@ python -m venv .venv
 ./.venv/Scripts/typology run
 ```
 
-Real output from a default run (50,416 transactions, 441 labeled laundering, 0.87%):
+Real output from a default run (50,416 transactions, 441 labeled laundering, 0.87%; trained
+on the first 70% of the timeline, tested on the last 30%):
 
 ```
-Naive baseline (always predict 'legitimate') accuracy: 99.13%
-PR-AUC: 0.988
+Naive baseline (always predict 'legitimate') accuracy: 99.17%
+PR-AUC: 0.876  (amount-only baseline: 0.726)
 
 Threshold  Precision  Recall
-0.10       90.00%     95.45%
-0.50       95.31%     92.42%
-0.90       97.56%     90.91%
+0.10       77.46%     88.00%
+0.50       85.00%     81.60%
+0.90       93.81%     72.80%
+```
+
+```bash
+typology leakage     # the four-way comparison above
 ```
 
 Plus a SHAP-based explanation for sample flagged transactions — the real regulatory need
@@ -83,12 +124,14 @@ actionable, however accurate the underlying model is.
 pytest
 ```
 
-16 tests: structural checks on the generator (each typology actually produces the graph
-shape it claims to — a fan-out really has one source and many destinations within a short
-window, a layering chain really is a connected sequence of hops, structuring amounts stay
-under the threshold), hand-verified graph feature computations on small known graphs, and
-model evaluation sanity checks (valid probability ranges, beats the naive baseline by a
-wide margin, sensible precision/recall trade-off direction across thresholds).
+24 tests: structural checks on the generator (each typology actually produces the graph
+shape it claims to), hand-verified feature computations on small known graphs, and model
+sanity checks (valid probabilities, beats the naive and the amount-only baselines, chronological
+split really tests only on the future).
+
+The key test for the point-in-time claim edits and appends *later* transactions and asserts
+that every earlier row's features are unchanged. It was checked against the old dataset-wide
+builder to confirm it fails there, so it is not vacuous.
 
 ## Real bug found by actually running this, not just writing it
 
@@ -100,3 +143,7 @@ landed almost every row near threshold 0.00. Fixed to evaluate at fixed threshol
 started as an O(n²) full-DataFrame scan per transaction, which doesn't finish in
 reasonable time past a few thousand rows; fixed to per-account sorted-timestamp arrays
 with binary search before ever running it at realistic scale.
+
+## License
+
+MIT

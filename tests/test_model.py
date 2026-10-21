@@ -1,4 +1,3 @@
-import pandas as pd
 
 from typology.features import build_features
 from typology.generator import GeneratorConfig, generate
@@ -48,3 +47,25 @@ def test_threshold_table_has_monotonic_relationship():
     # check the endpoints rather than every step, since precision-recall curves aren't
     # perfectly monotonic point-to-point.
     assert table.iloc[-1]["recall"] <= table.iloc[0]["recall"]
+
+
+def test_temporal_split_tests_only_on_the_future():
+    features, labels = _small_dataset()
+    _, result = train_and_evaluate(features, labels, split="temporal")
+    cutoff = features["timestamp"].quantile(0.7)
+    test_ts = features.loc[result.test_scores.index, "timestamp"]
+    assert (test_ts > cutoff).all()
+    assert len(result.test_scores) == result.n_test
+
+
+def test_random_split_still_supported():
+    features, labels = _small_dataset()
+    _, result = train_and_evaluate(features, labels, split="random")
+    assert 0.0 <= result.pr_auc <= 1.0
+
+
+def test_graph_features_beat_amount_alone():
+    features, labels = _small_dataset()
+    _, full = train_and_evaluate(features, labels)
+    _, amount_only = train_and_evaluate(features, labels, columns=["amount"])
+    assert full.pr_auc > amount_only.pr_auc

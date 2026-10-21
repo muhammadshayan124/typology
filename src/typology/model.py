@@ -7,6 +7,7 @@ good model later.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -42,17 +43,34 @@ class EvalResult:
     threshold_table: pd.DataFrame  # precision/recall at several thresholds -- the real, honest picture
     n_test: int
     n_positive_test: int
+    test_scores: pd.Series  # P(laundering) per test tx_id, for slicing by typology
 
 
 def train_and_evaluate(
-    features: pd.DataFrame, labels: pd.Series, test_size: float = 0.3, seed: int = 42
+    features: pd.DataFrame,
+    labels: pd.Series,
+    test_size: float = 0.3,
+    seed: int = 42,
+    split: Literal["temporal", "random"] = "temporal",
+    columns: list[str] | None = None,
 ) -> tuple[XGBClassifier, EvalResult]:
-    X = features[FEATURE_COLUMNS]
+    """`temporal` trains on the earliest (1 - test_size) of the timeline and tests on the
+    rest, which is how a monitor is actually used: fit on history, score what comes next.
+    `random` is a stratified shuffle split, kept so the optimism of shuffling can be
+    measured (see `typology leakage`).
+    """
+    X = features[columns or FEATURE_COLUMNS]
     y = labels.loc[features.index]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=seed, stratify=y
-    )
+    if split == "temporal":
+        cutoff = features["timestamp"].quantile(1 - test_size)
+        is_test = (features["timestamp"] > cutoff).to_numpy()
+        X_train, X_test = X[~is_test], X[is_test]
+        y_train, y_test = y[~is_test], y[is_test]
+    else:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=seed, stratify=y
+        )
 
     positive_rate = y_train.mean()
     scale_pos_weight = (1 - positive_rate) / positive_rate if positive_rate > 0 else 1.0
@@ -98,5 +116,6 @@ def train_and_evaluate(
         threshold_table=threshold_table,
         n_test=len(y_test),
         n_positive_test=int(y_test.sum()),
+        test_scores=pd.Series(probs, index=y_test.index),
     )
     return model, result
